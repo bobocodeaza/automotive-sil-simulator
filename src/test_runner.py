@@ -37,12 +37,13 @@ class RPMTest(TestCase):
         if rpm > self.max_seen:
             self.max_seen = rpm
 
-        if rpm > self.MAX_RPM and self.passed:
-            self.passed = False
-            self.details = f"Exceeded {self.MAX_RPM} RPM limit (got {rpm} RPM at t={frame.get('elapsed_sec')}s)"
-            self.done = True
-        elif self.passed:
-            self.details = f"Within limits (peak: {self.max_seen} RPM)"
+        if not self.done:
+            if rpm > self.MAX_RPM:
+                self.passed = False
+                self.details = f"Exceeded {self.MAX_RPM} RPM limit (got {rpm} RPM at t={frame.get('elapsed_sec')}s)"
+                self.done = True
+            else:
+                self.details = f"Within limits (peak: {self.max_seen} RPM)"
 
 
 class OverheatingTest(TestCase):
@@ -53,6 +54,7 @@ class OverheatingTest(TestCase):
         super().__init__("Test Overheating")
         self.threshold_ts = None
         self.peak_temp = 0.0
+        self.trigger_dt = None
 
     def evaluate(self, frame: dict, window: deque) -> None:
         temp = frame.get("engine_temp_c", 0.0)
@@ -62,7 +64,6 @@ class OverheatingTest(TestCase):
         if temp > self.peak_temp:
             self.peak_temp = temp
 
-        # Temperature delta across the 50-sample sliding window
         delta = 0.0
         if len(window) >= 2:
             delta = round(window[-1]["engine_temp_c"] - window[0]["engine_temp_c"], 2)
@@ -72,23 +73,25 @@ class OverheatingTest(TestCase):
                 self.threshold_ts = ts
                 print(f"[warn] Temp crossed {self.LIMIT_C}C ({temp}C, window delta: +{delta}C). Waiting for ECU safe mode...")
 
-            dt = ts - self.threshold_ts
-
-            if safe_mode and not self.done:
-                if dt <= self.MAX_REACTION_SEC:
-                    self.passed = True
-                    self.details = f"Safe mode triggered in {dt:.2f}s (peak: {self.peak_temp}C)"
-                else:
+            if not self.done:
+                dt = ts - self.threshold_ts
+                if safe_mode:
+                    self.trigger_dt = dt
+                    if dt <= self.MAX_REACTION_SEC:
+                        self.passed = True
+                        self.details = f"Safe mode triggered in {dt:.2f}s (peak: {self.peak_temp}C)"
+                    else:
+                        self.passed = False
+                        self.details = f"Reaction time exceeded ({dt:.2f}s > {self.MAX_REACTION_SEC}s)"
+                    self.done = True
+                elif dt > self.MAX_REACTION_SEC:
                     self.passed = False
-                    self.details = f"Reaction time exceeded ({dt:.2f}s > {self.MAX_REACTION_SEC}s)"
-                self.done = True
-
-            elif dt > self.MAX_REACTION_SEC and self.passed:
-                self.passed = False
-                self.details = f"Reaction time exceeded ({dt:.2f}s > {self.MAX_REACTION_SEC}s, no safe mode at {temp}C)"
-                self.done = True
+                    self.details = f"Reaction time exceeded ({dt:.2f}s > {self.MAX_REACTION_SEC}s, no safe mode at {temp}C)"
+                    self.done = True
+            elif self.passed and self.trigger_dt is not None:
+                self.details = f"Safe mode triggered in {self.trigger_dt:.2f}s (peak: {self.peak_temp}C)"
         else:
-            if self.threshold_ts is None and self.passed:
+            if self.threshold_ts is None and not self.done:
                 self.details = f"Thermal regime nominal (peak: {self.peak_temp}C, window delta: {delta}C)"
 
 
@@ -138,7 +141,6 @@ def main():
     sock.bind(("127.0.0.1", args.port))
     sock.settimeout(3.0)
 
-    # Keep last 50 readings (5s of data at 10Hz) for trend checks
     window = deque(maxlen=50)
     tests = [RPMTest(), OverheatingTest()]
 

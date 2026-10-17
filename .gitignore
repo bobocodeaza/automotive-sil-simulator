@@ -1,0 +1,11 @@
+# Processes and logs
+.sim.pid
+reports/*.log
+reports/*.db
+!reports/.gitkeep
+
+# Python cache
+__pycache__/
+*.py[cod]
+.venv/
+venv/
