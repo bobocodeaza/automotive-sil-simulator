@@ -1,0 +1,64 @@
+name: SIL Validation CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  sil-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set executable permissions
+        run: chmod +x hil_manager.sh src/sensor_sim.py src/test_runner.py
+
+      - name: Run nominal scenario (expect PASS)
+        run: ./hil_manager.sh start --scenario normal --duration 12
+
+      - name: Run handled overheating scenario (expect PASS)
+        run: ./hil_manager.sh start --scenario overheating_handled --duration 20
+
+      - name: Run unmitigated overheating fault (expect FAILcaught)
+        run: |
+          if ./hil_manager.sh start --scenario overheating --duration 20; then
+            echo "Error: Test runner should have failed on overheating scenario"
+            exit 1
+          fi
+
+      - name: Run RPM spike fault (expect FAIL caught)
+        run: |
+          if ./hil_manager.sh start --scenario rpm_spike --duration 12; then
+            echo "Error: Test runner should have failed on rpm_spike scenario"
+            exit 1
+          fi
+
+      - name: Verify SQLite database records
+        run: |
+          python3 -c "
+          import sqlite3
+          conn = sqlite3.connect('reports/hil_results.db')
+          rows = conn.execute('SELECT scenario, test_name, status, details FROM test_runs').fetchall()
+          for r in rows:
+              print(r)
+          assert len(rows) == 8, f'Expected 8 test records across 4 runs, got {len(rows)}'
+          "
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sil-test-reports
+          path: |
+            reports/test_report.log
+            reports/hil_results.db
